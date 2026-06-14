@@ -7002,6 +7002,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return await self._handle_goal_command(event)
                 return "Agent is running — use /goal status / pause / clear mid-run, or /stop before setting a new goal."
 
+            if _cmd_def_inner and _cmd_def_inner.name == "moa":
+                return "Agent is running — wait or /stop first, then run /moa."
+
             # /subgoal is safe mid-run — it only modifies the goal's
             # subgoals list, which the judge reads at the next turn
             # boundary. No race with the running turn.
@@ -7475,6 +7478,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "goal":
             return await self._handle_goal_command(event)
 
+        if canonical == "moa":
+            from hermes_cli.moa_config import (
+                exact_moa_preset_name,
+                moa_usage,
+                normalize_moa_config,
+                resolve_moa_preset,
+            )
+            from hermes_cli.config import load_config
+
+            moa_payload = event.get_command_args().strip()
+            try:
+                cfg = load_config()
+                moa_cfg = normalize_moa_config(cfg.get("moa") if isinstance(cfg, dict) else {})
+            except Exception:
+                moa_cfg = normalize_moa_config({})
+            _moa_modes = getattr(self, "_moa_active_presets", None)
+            if _moa_modes is None:
+                _moa_modes = {}
+                self._moa_active_presets = _moa_modes
+            matched_preset = exact_moa_preset_name(moa_cfg, moa_payload) if moa_payload else moa_cfg["default_preset"]
+            if matched_preset:
+                active = _moa_modes.get(_quick_key, "")
+                if active == matched_preset:
+                    _moa_modes.pop(_quick_key, None)
+                    return f"MoA off ({matched_preset})."
+                _moa_modes[_quick_key] = matched_preset
+                return f"MoA on: {matched_preset}."
+            if not moa_payload:
+                return moa_usage()
+            preset = _moa_modes.get(_quick_key) or moa_cfg["default_preset"]
+            try:
+                event.text = moa_payload
+                event._moa_config = resolve_moa_preset(moa_cfg, preset)
+                event._moa_disable_after_turn = True
+            except Exception:
+                return "Failed to prepare MoA turn."
+
         if canonical == "subgoal":
             return await self._handle_subgoal_command(event)
 
@@ -7683,6 +7723,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         try:
             _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+            if getattr(event, "_moa_disable_after_turn", False):
+                try:
+                    getattr(self, "_moa_active_presets", {}).pop(_quick_key, None)
+                except Exception:
+                    pass
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will
             # either mark it done, pause it (budget), or enqueue a
@@ -8713,6 +8758,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                moa_config=getattr(event, "_moa_config", None),
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -9738,6 +9784,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     message_id=None,
                     channel_prompt=None,
                 )
+                try:
+                    from hermes_cli.config import load_config as _load_config
+                    from hermes_cli.moa_config import normalize_moa_config, resolve_moa_preset
+
+                    _active_moa = getattr(self, "_moa_active_presets", {}).get(_quick_key, "")
+                    if _active_moa:
+                        _cfg = _load_config()
+                        cont_event._moa_config = resolve_moa_preset(
+                            normalize_moa_config(_cfg.get("moa") if isinstance(_cfg, dict) else {}),
+                            _active_moa,
+                        )
+                except Exception:
+                    pass
                 self._enqueue_fifo(_quick_key, cont_event, adapter)
         except Exception as exc:
             logger.debug("goal continuation: enqueue failed: %s", exc)
@@ -13236,6 +13295,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        moa_config: Optional[dict] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -14700,6 +14760,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 }
                 if observed_group_context:
                     _conversation_kwargs["persist_user_message"] = message
+                _moa_cfg = moa_config
+                if _moa_cfg is None:
+                    try:
+                        from hermes_cli.config import load_config as _load_config
+                        from hermes_cli.moa_config import normalize_moa_config, resolve_moa_preset
+
+                        _active_moa = getattr(self, "_moa_active_presets", {}).get(session_key, "")
+                        if _active_moa:
+                            _cfg = _load_config()
+                            _moa_cfg = resolve_moa_preset(normalize_moa_config(_cfg.get("moa") if isinstance(_cfg, dict) else {}), _active_moa)
+                    except Exception:
+                        _moa_cfg = None
+                if _moa_cfg is not None:
+                    _conversation_kwargs["moa_config"] = _moa_cfg
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
             finally:
                 unregister_gateway_notify(_approval_session_key)

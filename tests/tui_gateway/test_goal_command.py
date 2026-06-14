@@ -200,3 +200,79 @@ def test_pending_input_commands_includes_goal(server):
     """Guard: _PENDING_INPUT_COMMANDS must list 'goal' — removing it would
     silently re-break the TUI."""
     assert "goal" in server._PENDING_INPUT_COMMANDS
+
+
+# ── command.dispatch /moa ────────────────────────────────────────────
+
+def _write_moa_config(home, text):
+    cfg_path = home / "config.yaml"
+    cfg_path.write_text(text)
+
+
+def test_moa_bare_toggles_default_preset(server, session, hermes_home):
+    _write_moa_config(hermes_home, """
+moa:
+  default_preset: default
+  presets:
+    default:
+      reference_models:
+        - provider: openai-codex
+          model: gpt-5.5
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+""")
+    sid, _, s = session
+    r = _call(server, "command.dispatch", name="moa", arg="", session_id=sid)
+    assert r["result"]["type"] == "exec"
+    assert "MoA on: default" in r["result"]["output"]
+    assert s["moa_active_preset"] == "default"
+
+    r = _call(server, "command.dispatch", name="moa", arg="", session_id=sid)
+    assert "MoA off (default)" in r["result"]["output"]
+    assert s["moa_active_preset"] == ""
+
+
+def test_moa_exact_preset_toggles_named_preset(server, session, hermes_home):
+    _write_moa_config(hermes_home, """
+moa:
+  default_preset: default
+  presets:
+    default: {}
+    review:
+      reference_models:
+        - provider: openrouter
+          model: deepseek/deepseek-v4-pro
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+""")
+    sid, _, s = session
+    r = _call(server, "command.dispatch", name="moa", arg="review", session_id=sid)
+    assert r["result"]["type"] == "exec"
+    assert s["moa_active_preset"] == "review"
+
+
+def test_moa_non_preset_returns_one_shot_send(server, session, hermes_home):
+    _write_moa_config(hermes_home, """
+moa:
+  default_preset: default
+  presets:
+    default:
+      reference_models:
+        - provider: openai-codex
+          model: gpt-5.5
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+""")
+    sid, _, _ = session
+    r = _call(server, "command.dispatch", name="moa", arg="inspect this project", session_id=sid)
+    result = r["result"]
+    assert result["type"] == "send"
+    assert result["message"].startswith("__HERMES_MOA_TURN_V1__")
+    assert "one-shot" in result["notice"]
+
+
+def test_pending_input_commands_includes_moa(server):
+    assert "moa" in server._PENDING_INPUT_COMMANDS

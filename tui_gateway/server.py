@@ -5866,6 +5866,15 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     run_kwargs["task_id"] = session["session_key"]
             except (TypeError, ValueError):
                 pass
+            try:
+                from hermes_cli.moa_config import normalize_moa_config, resolve_moa_preset
+
+                active_moa = session.get("moa_active_preset") or ""
+                if active_moa:
+                    cfg = normalize_moa_config(_load_cfg().get("moa") or {})
+                    run_kwargs["moa_config"] = resolve_moa_preset(cfg, active_moa)
+            except Exception:
+                pass
             result = agent.run_conversation(run_message, **run_kwargs)
 
             last_reasoning = None
@@ -7869,6 +7878,7 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
         "steer",
         "plan",
         "goal",
+        "moa",
         "undo",
     }
 )
@@ -8131,6 +8141,36 @@ def _(rid, params: dict) -> dict:
         if not arg:
             return _err(rid, 4004, "usage: /queue <prompt>")
         return _ok(rid, {"type": "send", "message": arg})
+
+    if name == "moa":
+        try:
+            from hermes_cli.moa_config import (
+                build_moa_turn_prompt, exact_moa_preset_name, moa_usage, normalize_moa_config
+            )
+
+            moa_cfg = normalize_moa_config(_load_cfg().get("moa") or {})
+            matched = exact_moa_preset_name(moa_cfg, arg) if arg else moa_cfg["default_preset"]
+            if matched:
+                if not session:
+                    return _err(rid, 4001, "no active session")
+                if session.get("moa_active_preset") == matched:
+                    session["moa_active_preset"] = ""
+                    return _ok(rid, {"type": "exec", "output": f"MoA off ({matched})."})
+                session["moa_active_preset"] = matched
+                return _ok(rid, {"type": "exec", "output": f"MoA on: {matched}."})
+            if not arg:
+                return _err(rid, 4004, moa_usage())
+            preset = (session or {}).get("moa_active_preset") or moa_cfg["default_preset"]
+            return _ok(
+                rid,
+                {
+                    "type": "send",
+                    "notice": f"MoA one-shot queued with preset {preset}; MoA will turn off after this turn.",
+                    "message": build_moa_turn_prompt(arg, moa_cfg, preset=preset),
+                },
+            )
+        except Exception as exc:
+            return _err(rid, 5030, f"moa unavailable: {exc}")
 
     if name == "retry":
         if not session:

@@ -7641,6 +7641,36 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 _cprint(f"  No agent running; queued as next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
         elif canonical == "goal":
             self._handle_goal_command(cmd_original)
+        elif canonical == "moa":
+            from hermes_cli.moa_config import (
+                exact_moa_preset_name,
+                moa_usage,
+                normalize_moa_config,
+                resolve_moa_preset,
+            )
+
+            parts = cmd_original.split(None, 1)
+            payload = parts[1].strip() if len(parts) > 1 else ""
+            moa_cfg = self.config.get("moa") if isinstance(self.config, dict) else {}
+            normalized = normalize_moa_config(moa_cfg)
+            matched_preset = exact_moa_preset_name(normalized, payload) if payload else normalized["default_preset"]
+            if matched_preset:
+                active = getattr(self, "_moa_active_preset", "") or ""
+                if active == matched_preset:
+                    self._moa_active_preset = ""
+                    _cprint(f"  MoA off ({matched_preset}).")
+                else:
+                    self._moa_active_preset = matched_preset
+                    _cprint(f"  MoA on: {matched_preset}.")
+            else:
+                if not payload:
+                    _cprint(f"  {moa_usage()}")
+                    return True
+                preset = getattr(self, "_moa_active_preset", "") or normalized["default_preset"]
+                self._pending_moa_config = resolve_moa_preset(normalized, preset)
+                self._pending_moa_disable_after_turn = True
+                self._pending_agent_seed = payload
+                _cprint(f"  MoA one-shot queued with preset {preset}; MoA will turn off after this turn.")
         elif canonical == "subgoal":
             self._handle_subgoal_command(cmd_original)
         elif canonical == "skin":
@@ -10231,6 +10261,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 if _srn:
                     agent_message = _prepend_note_to_message(agent_message, _srn)
                     self._pending_skills_reload_note = None
+                _moa_cfg = getattr(self, "_pending_moa_config", None)
+                self._pending_moa_config = None
+                if _moa_cfg is None:
+                    try:
+                        from hermes_cli.moa_config import normalize_moa_config, resolve_moa_preset
+
+                        _active_moa = getattr(self, "_moa_active_preset", "") or ""
+                        if _active_moa:
+                            _moa_cfg = resolve_moa_preset(
+                                normalize_moa_config(self.config.get("moa") if isinstance(self.config, dict) else {}),
+                                _active_moa,
+                            )
+                    except Exception:
+                        _moa_cfg = None
                 try:
                     result = self.agent.run_conversation(
                         user_message=agent_message,
@@ -10238,7 +10282,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         stream_callback=stream_callback,
                         task_id=self.session_id,
                         persist_user_message=message if _voice_prefix else None,
+                        moa_config=_moa_cfg,
                     )
+                    if getattr(self, "_pending_moa_disable_after_turn", False):
+                        self._moa_active_preset = ""
+                        self._pending_moa_disable_after_turn = False
                 except Exception as exc:
                     logging.error("run_conversation raised: %s", exc, exc_info=True)
                     _summary = getattr(self.agent, '_summarize_api_error', lambda e: str(e)[:300])(exc)
