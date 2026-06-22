@@ -3,6 +3,11 @@
 Guards the fix for #46850: when a provider's live /v1/models endpoint
 returns a stale or incomplete list, the static curated models from
 ``_PROVIDER_MODELS`` must still appear in the merged result.
+
+These tests use a provider *not* in ``_MODELS_DEV_PREFERRED`` to isolate
+the live+curated merge logic. Providers in ``_MODELS_DEV_PREFERRED`` also
+merge with models.dev; that behavior is covered in
+``test_models_dev_preferred_merge.py``.
 """
 
 from unittest.mock import MagicMock, patch
@@ -25,14 +30,15 @@ class TestGenericProviderLiveCuratedMerge:
     def test_live_models_merged_with_curated(self):
         """Curated models come first; live-only models are appended."""
         live = ["glm-5.2", "glm-5.1", "glm-5"]
-        curated = _PROVIDER_MODELS["zai"]  # includes glm-5.1, glm-5, glm-4.5, etc.
+        curated = ["glm-5.2", "glm-5.1", "glm-5", "glm-4.5", "glm-4.5-flash"]
         profile = self._make_profile(live)
 
         with (
             patch("providers.get_provider_profile", return_value=profile),
             patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "k", "base_url": ""}),
+            patch.dict("hermes_cli.models._PROVIDER_MODELS", {"test-provider": curated}),
         ):
-            result = provider_model_ids("zai")
+            result = provider_model_ids("test-provider")
 
         # Curated entries first, in catalog order (keeps newest curated models
         # like glm-5.2 at the top of the picker — see #46309).
@@ -41,10 +47,9 @@ class TestGenericProviderLiveCuratedMerge:
         # Models present in both live and curated are not duplicated.
         assert result.count("glm-5.2") == 1
         assert result.count("glm-5.1") == 1
-        # Curated-only entries are part of the result (e.g. glm-4.5).
-        result_lower = [m.lower() for m in result]
-        assert "glm-4.5" in result_lower
-        assert "glm-4.5-flash" in result_lower
+        # Curated-only entries are part of the result.
+        assert "glm-4.5" in result
+        assert "glm-4.5-flash" in result
 
     def test_no_duplicate_models(self):
         """Models appearing in both live and curated are not duplicated."""
@@ -55,9 +60,9 @@ class TestGenericProviderLiveCuratedMerge:
         with (
             patch("providers.get_provider_profile", return_value=profile),
             patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "k", "base_url": ""}),
-            patch.dict("hermes_cli.models._PROVIDER_MODELS", {"zai": curated}),
+            patch.dict("hermes_cli.models._PROVIDER_MODELS", {"test-provider": curated}),
         ):
-            result = provider_model_ids("zai")
+            result = provider_model_ids("test-provider")
 
         assert result.count("glm-5.1") == 1
         assert result.count("glm-5") == 1
@@ -72,9 +77,9 @@ class TestGenericProviderLiveCuratedMerge:
         with (
             patch("providers.get_provider_profile", return_value=profile),
             patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "k", "base_url": ""}),
-            patch.dict("hermes_cli.models._PROVIDER_MODELS", {"zai": curated}),
+            patch.dict("hermes_cli.models._PROVIDER_MODELS", {"test-provider": curated}),
         ):
-            result = provider_model_ids("zai")
+            result = provider_model_ids("test-provider")
 
         # Curated-first: curated casing wins for models present in both.
         assert result == ["glm-5.1", "GLM-5", "glm-4.5"]
@@ -87,17 +92,16 @@ class TestGenericProviderLiveCuratedMerge:
         with (
             patch("providers.get_provider_profile", return_value=profile),
             patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "k", "base_url": ""}),
-            patch.dict("hermes_cli.models._PROVIDER_MODELS", {"zai": []}),
+            patch.dict("hermes_cli.models._PROVIDER_MODELS", {"test-provider": []}),
         ):
-            result = provider_model_ids("zai")
+            result = provider_model_ids("test-provider")
 
         assert result == ["model-a", "model-b"]
 
     def test_live_empty_falls_back_to_curated(self):
         """When live returns nothing, curated static list is used.
 
-        ZAI is in _MODELS_DEV_PREFERRED so the fallback path merges with
-        models.dev.  We mock _merge_with_models_dev to isolate the test.
+        A non-preferred provider does not call models.dev.
         """
         curated = ["glm-5.1", "glm-5", "glm-4.5"]
         profile = self._make_profile([])
@@ -105,10 +109,9 @@ class TestGenericProviderLiveCuratedMerge:
         with (
             patch("providers.get_provider_profile", return_value=profile),
             patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "k", "base_url": ""}),
-            patch.dict("hermes_cli.models._PROVIDER_MODELS", {"zai": curated}),
-            patch("hermes_cli.models._merge_with_models_dev", return_value=curated),
+            patch.dict("hermes_cli.models._PROVIDER_MODELS", {"test-provider": curated}),
         ):
-            result = provider_model_ids("zai")
+            result = provider_model_ids("test-provider")
 
         assert result == curated
 

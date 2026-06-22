@@ -2413,15 +2413,20 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                     # the top of the picker; live-only entries are appended
                     # afterwards for discovery.  (#46850)
                     curated = list(_PROVIDER_MODELS.get(normalized, []))
-                    if curated:
-                        merged = list(curated)
-                        merged_lower = {m.lower() for m in curated}
-                        for m in live:
-                            if m.lower() not in merged_lower:
-                                merged.append(m)
-                                merged_lower.add(m.lower())
-                        return merged
-                    return live
+                    if normalized in _MODELS_DEV_PREFERRED:
+                        # For providers tracked in models.dev, the CLI setup
+                        # flow (`hermes model`) prefers the models.dev catalog
+                        # (#46850). Keep the same ordering here so `/model`
+                        # surfaces the same models, with live-only and curated
+                        # entries appended afterwards.
+                        return _merge_with_models_dev(normalized, list(curated) + list(live))
+                    merged = list(curated)
+                    merged_lower = {m.lower() for m in curated}
+                    for m in live:
+                        if m.lower() not in merged_lower:
+                            merged.append(m)
+                            merged_lower.add(m.lower())
+                    return merged
             # Use profile's fallback_models if defined
             if _p.fallback_models:
                 return list(_p.fallback_models)
