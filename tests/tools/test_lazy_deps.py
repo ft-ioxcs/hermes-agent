@@ -376,6 +376,63 @@ class TestRefreshActiveFeatures:
 
         ld.ensure("platform.matrix", prompt=False)
 
+    def test_macos_cmake4_matrix_refresh_is_skipped_before_pip(self, monkeypatch):
+        """macOS + CMake ≥ 4 → Matrix E2EE gated; pip must not be called."""
+        monkeypatch.setattr(ld.sys, "platform", "darwin")
+        monkeypatch.setattr(ld, "_macos_cmake4_or_newer", lambda: True)
+        monkeypatch.setattr(ld, "active_features", lambda: ["platform.matrix"])
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        monkeypatch.setattr(
+            ld,
+            "_venv_pip_install",
+            lambda *a, **kw: pytest.fail("pip should not be called for unsupported Matrix on macOS+CMake4"),
+        )
+
+        result = ld.refresh_active_features()
+
+        assert result["platform.matrix"].startswith("skipped:")
+        assert "CMake" in result["platform.matrix"]
+
+    def test_macos_cmake4_matrix_ensure_fails_before_pip(self, monkeypatch):
+        monkeypatch.setattr(ld.sys, "platform", "darwin")
+        monkeypatch.setattr(ld, "_macos_cmake4_or_newer", lambda: True)
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        monkeypatch.setattr(
+            ld,
+            "_venv_pip_install",
+            lambda *a, **kw: pytest.fail("pip should not be called for unsupported Matrix on macOS+CMake4"),
+        )
+
+        with pytest.raises(ld.FeatureUnavailable, match="CMake"):
+            ld.ensure("platform.matrix", prompt=False)
+
+    def test_macos_no_cmake_matrix_not_gated(self, monkeypatch):
+        """macOS without CMake 4 → Matrix allowed; pip may be called."""
+        monkeypatch.setattr(ld.sys, "platform", "darwin")
+        monkeypatch.setattr(ld, "_macos_cmake4_or_newer", lambda: False)
+        monkeypatch.setattr(ld, "active_features", lambda: ["platform.matrix"])
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+
+        call_count = [0]
+
+        def fake_satisfied(spec):
+            call_count[0] += 1
+            # First call: packages missing → triggers install.
+            # Subsequent calls: install "succeeded" → check passes.
+            return call_count[0] > 1
+
+        monkeypatch.setattr(ld, "_is_satisfied", fake_satisfied)
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda *a, **kw: ld._InstallResult(success=True, stdout="ok", stderr="")
+        )
+
+        result = ld.refresh_active_features()
+
+        assert result["platform.matrix"] == "refreshed"
+
     def test_already_current_is_noop(self, monkeypatch):
         monkeypatch.setattr(ld, "active_features", lambda: ["test.feat"])
         monkeypatch.setitem(ld.LAZY_DEPS, "test.feat", ("zzzfake==1.0.0",))

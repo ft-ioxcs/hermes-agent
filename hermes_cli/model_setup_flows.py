@@ -1899,7 +1899,7 @@ def _model_flow_kimi(config, current_model=""):
         load_config,
         save_config,
     )
-    from hermes_cli.models import _PROVIDER_MODELS
+    from hermes_cli.models import _PROVIDER_MODELS, provider_model_ids
 
     provider_id = "kimi-coding"
     pconfig = PROVIDER_REGISTRY[provider_id]
@@ -1932,8 +1932,12 @@ def _model_flow_kimi(config, current_model=""):
         save_env_value(base_url_env, "")
     print()
 
-    # Step 3: Model selection — show appropriate models for the endpoint
-    model_list = _PROVIDER_MODELS.get("kimi-coding" if is_coding_plan else "moonshot", [])
+    # Step 3: Model selection — use live discovery for Coding Plan while
+    # preserving the endpoint-specific curated catalog for legacy Moonshot keys.
+    if is_coding_plan:
+        model_list = provider_model_ids("kimi-coding", force_refresh=True)
+    else:
+        model_list = _PROVIDER_MODELS.get("moonshot", [])
 
     if model_list:
         selected = _prompt_model_selection(
